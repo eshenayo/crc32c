@@ -285,8 +285,8 @@ TEST(test_crc32c, sse_scalar) {
             arr[ii] = randomval();
         }
         uint32_t ssecrc = crc32c_sse42(arr.data(), size, 0xFFFFFFFF);
-        uint32_t sse_pg_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
-        ASSERT_EQ(sse_pg_crc, ssecrc) << "buffer size = " << arr.size();
+        uint32_t scalar_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
+        ASSERT_EQ(scalar_crc, ssecrc) << "buffer size = " << arr.size();
         arr.clear();
     }
 }
@@ -301,8 +301,8 @@ TEST(test_crc32c, avx512_scalar) {
             arr[ii] = randomval();
         }
         uint32_t avxcrc = crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
-        uint32_t sse_pg_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
-        ASSERT_EQ(sse_pg_crc, avxcrc) << "buffer size = " << arr.size();
+        uint32_t scalar_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
+        ASSERT_EQ(scalar_crc, avxcrc) << "buffer size = " << arr.size();
         arr.clear();
     }
 }
