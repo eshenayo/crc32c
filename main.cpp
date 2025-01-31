@@ -278,14 +278,21 @@ static uint8_t randomval()
 TEST(test_crc32c, sse_scalar) {
     std::vector<size_t> bufsize = std::vector<size_t>(MAX_BUF_SIZE);
     std::iota(bufsize.begin(), bufsize.end(), 1);
+
+    /* test for all buf sizes 1 - MAX_BUF_SIZE */
     for (auto size : bufsize) {
+        /* Initialize to random values */
         std::vector<unsigned char> arr(size);
         srand(42);
         for (size_t ii = 0; ii < size; ++ii) {
             arr[ii] = randomval();
         }
+
+        /* Compute crc32c using simple scalar methods and SIMD method */
         uint32_t ssecrc = crc32c_sse42(arr.data(), size, 0xFFFFFFFF);
         uint32_t scalar_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
+
+        /* ASSERT values are the same */
         ASSERT_EQ(scalar_crc, ssecrc) << "buffer size = " << arr.size();
         arr.clear();
     }
@@ -294,14 +301,22 @@ TEST(test_crc32c, sse_scalar) {
 TEST(test_crc32c, avx512_scalar) {
     std::vector<size_t> bufsize = std::vector<size_t>(MAX_BUF_SIZE);
     std::iota(bufsize.begin(), bufsize.end(), 1);
+
+    /* test for all buf sizes 1 - MAX_BUF_SIZE */
     for (auto size : bufsize) {
+
+        /* Initialize to random values */
         std::vector<unsigned char> arr(size);
         srand(42);
         for (size_t ii = 0; ii < size; ++ii) {
             arr[ii] = randomval();
         }
+
+        /* Compute crc32c using simple scalar methods and SIMD method */
         uint32_t avxcrc = crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
         uint32_t scalar_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
+
+        /* ASSERT values are the same */
         ASSERT_EQ(scalar_crc, avxcrc) << "buffer size = " << arr.size();
         arr.clear();
     }
