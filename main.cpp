@@ -1,9 +1,6 @@
-#include <emmintrin.h>
-#include <smmintrin.h>
-#include <wmmintrin.h>
 #include <immintrin.h>
 #include <gtest/gtest.h>
-#include <zlib.h>
+#include <numeric>
 
 #define zalign(x) __attribute__((aligned(x)))
 
@@ -276,35 +273,34 @@ static uint8_t randomval()
     return (rand() % 255);
 }
 
-class test_crc32c :public ::testing::TestWithParam<int> {
-};
-
-TEST_P(test_crc32c, sse_scalar) {
-    int size = GetParam();
-    std::vector<unsigned char> arr;
-    srand(42);
-    for (size_t ii = 0; ii < size; ++ii) {
-        arr.push_back(randomval());
+TEST(test_crc32c, sse_scalar) {
+    std::vector<size_t> bufsize = std::vector<size_t>(1024);
+    std::iota(bufsize.begin(), bufsize.end(), 1);
+    for (auto size : bufsize) {
+        std::vector<unsigned char> arr(size);
+        srand(42);
+        for (size_t ii = 0; ii < size; ++ii) {
+            arr[ii] = randomval();
+        }
+        uint32_t ssecrc = crc32c_sse42(arr.data(), size, 0xFFFFFFFF);
+        uint32_t sse_pg_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
+        ASSERT_EQ(sse_pg_crc, ssecrc) << "buffer size = " << size;
+        arr.clear();
     }
-    uint32_t ssecrc = crc32c_sse42(arr.data(), size, 0xFFFFFFFF);
-    uint32_t sse_pg_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
-    ASSERT_EQ(sse_pg_crc, ssecrc);
 }
 
-TEST_P(test_crc32c, avx512_scalar) {
-    int size = GetParam();
-    std::vector<unsigned char> arr;
-    srand(42);
-    for (size_t ii = 0; ii < size; ++ii) {
-        arr.push_back(randomval());
+TEST(test_crc32c, avx512_scalar) {
+    std::vector<size_t> bufsize = std::vector<size_t>(1024);
+    std::iota(bufsize.begin(), bufsize.end(), 1);
+    for (auto size : bufsize) {
+        std::vector<unsigned char> arr(size);
+        srand(42);
+        for (size_t ii = 0; ii < size; ++ii) {
+            arr[ii] = randomval();
+        }
+        uint32_t avxcrc = crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
+        uint32_t sse_pg_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
+        ASSERT_EQ(sse_pg_crc, avxcrc) << "buffer size = " << size;
+        arr.clear();
     }
-    uint32_t avxcrc = crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
-    uint32_t sse_pg_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
-    ASSERT_EQ(sse_pg_crc, avxcrc);
 }
-
-INSTANTIATE_TEST_CASE_P(
-        crc32ctests,
-	test_crc32c,
-        ::testing::Values(1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 18, 19, 32, 64, 65, 66, 71, 128, 256));
-
