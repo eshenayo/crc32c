@@ -273,8 +273,10 @@ static uint8_t randomval()
     return (rand() % 255);
 }
 
+#define MAX_BUF_SIZE 4*1024
+
 TEST(test_crc32c, sse_scalar) {
-    std::vector<size_t> bufsize = std::vector<size_t>(1024);
+    std::vector<size_t> bufsize = std::vector<size_t>(MAX_BUF_SIZE);
     std::iota(bufsize.begin(), bufsize.end(), 1);
     for (auto size : bufsize) {
         std::vector<unsigned char> arr(size);
@@ -284,13 +286,13 @@ TEST(test_crc32c, sse_scalar) {
         }
         uint32_t ssecrc = crc32c_sse42(arr.data(), size, 0xFFFFFFFF);
         uint32_t sse_pg_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
-        ASSERT_EQ(sse_pg_crc, ssecrc) << "buffer size = " << size;
+        ASSERT_EQ(sse_pg_crc, ssecrc) << "buffer size = " << arr.size();
         arr.clear();
     }
 }
 
 TEST(test_crc32c, avx512_scalar) {
-    std::vector<size_t> bufsize = std::vector<size_t>(1024);
+    std::vector<size_t> bufsize = std::vector<size_t>(MAX_BUF_SIZE);
     std::iota(bufsize.begin(), bufsize.end(), 1);
     for (auto size : bufsize) {
         std::vector<unsigned char> arr(size);
@@ -300,7 +302,7 @@ TEST(test_crc32c, avx512_scalar) {
         }
         uint32_t avxcrc = crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
         uint32_t sse_pg_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
-        ASSERT_EQ(sse_pg_crc, avxcrc) << "buffer size = " << size;
+        ASSERT_EQ(sse_pg_crc, avxcrc) << "buffer size = " << arr.size();
         arr.clear();
     }
 }
