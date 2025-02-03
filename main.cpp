@@ -1,8 +1,11 @@
+
 #include <immintrin.h>
 #include <gtest/gtest.h>
 #include <numeric>
 
 #define zalign(x) __attribute__((aligned(x)))
+#define aligned_512_u64 __attribute__((aligned64)) uint64_t
+#define load_zmm _mm512_loadu_si512
 
 __attribute__((target("sse4.2")))
 inline uint32_t
@@ -127,6 +130,123 @@ crc32c_sse42(const unsigned char *buf, ssize_t len, uint32_t crc)
         crc = _mm_extract_epi32(x1, 1);
     }
     return crc32c_scalar(buf, len, crc);
+}
+
+
+__attribute__((target("avx512vl,vpclmulqdq")))
+static uint32_t
+aws_crc32c_avx512(const uint8_t *input, int length, uint32_t previous_crc) {
+
+    uint32_t crc = previous_crc;
+
+    static const uint64_t zalign(64) k1k2[8] = {
+            0xdcb17aa4, 0xb9e02b86, 0xdcb17aa4, 0xb9e02b86, 0xdcb17aa4,
+            0xb9e02b86, 0xdcb17aa4, 0xb9e02b86};
+    static const uint64_t zalign(64) k3k4[8] = {
+            0x740eef02, 0x9e4addf8, 0x740eef02, 0x9e4addf8, 0x740eef02,
+            0x9e4addf8, 0x740eef02, 0x9e4addf8};
+    static const uint64_t zalign(64) k9k10[8] = {
+            0x6992cea2, 0x0d3b6092, 0x6992cea2, 0x0d3b6092, 0x6992cea2,
+            0x0d3b6092, 0x6992cea2, 0x0d3b6092};
+    static const uint64_t zalign(64) k1k4[8] = {
+            0x1c291d04, 0xddc0152b, 0x3da6d0cb, 0xba4fc28e, 0xf20c0dfe,
+            0x493c7d27, 0x00000000, 0x00000000};
+
+    __m512i x0, x1, x2, x3, x4, x5, x6, x7, x8, y5, y6, y7, y8;
+    __m128i a1;
+
+    /*
+     * There's at least one block of 256.
+     */
+    x1 = load_zmm(input + 0x00);
+    x2 = load_zmm(input + 0x40);
+    x3 = load_zmm(input + 0x80);
+    x4 = load_zmm(input + 0xC0);
+
+    // Load the crc into a zmm register and XOR with the first 64 bytes of input
+    x5 = _mm512_inserti32x4(_mm512_setzero_si512(), _mm_cvtsi32_si128((int)crc), 0);
+    x1 = _mm512_xor_si512(x1, x5);
+
+    x0 = load_zmm(k1k2);
+
+    input += 256;
+    length -= 256;
+
+    /*
+     * Parallel fold blocks of 256, if any.
+     */
+    while (length >= 256) {
+        x5 = _mm512_clmulepi64_epi128(x1, x0, 0x00);
+        x6 = _mm512_clmulepi64_epi128(x2, x0, 0x00);
+        x7 = _mm512_clmulepi64_epi128(x3, x0, 0x00);
+        x8 = _mm512_clmulepi64_epi128(x4, x0, 0x00);
+
+        x1 = _mm512_clmulepi64_epi128(x1, x0, 0x11);
+        x2 = _mm512_clmulepi64_epi128(x2, x0, 0x11);
+        x3 = _mm512_clmulepi64_epi128(x3, x0, 0x11);
+        x4 = _mm512_clmulepi64_epi128(x4, x0, 0x11);
+
+        y5 = load_zmm(input + 0x00);
+        y6 = load_zmm(input + 0x40);
+        y7 = load_zmm(input + 0x80);
+        y8 = load_zmm(input + 0xC0);
+
+        x1 = _mm512_ternarylogic_epi64(x1, x5, y5, 0x96);
+        x2 = _mm512_ternarylogic_epi64(x2, x6, y6, 0x96);
+        x3 = _mm512_ternarylogic_epi64(x3, x7, y7, 0x96);
+        x4 = _mm512_ternarylogic_epi64(x4, x8, y8, 0x96);
+
+        input += 256;
+        length -= 256;
+    }
+
+    /*
+     * Fold 256 bytes into 64 bytes.
+     */
+    x0 = load_zmm(k9k10);
+    x5 = _mm512_clmulepi64_epi128(x1, x0, 0x00);
+    x6 = _mm512_clmulepi64_epi128(x1, x0, 0x11);
+    x3 = _mm512_ternarylogic_epi64(x3, x5, x6, 0x96);
+
+    x7 = _mm512_clmulepi64_epi128(x2, x0, 0x00);
+    x8 = _mm512_clmulepi64_epi128(x2, x0, 0x11);
+    x4 = _mm512_ternarylogic_epi64(x4, x7, x8, 0x96);
+
+    x0 = load_zmm(k3k4);
+    y5 = _mm512_clmulepi64_epi128(x3, x0, 0x00);
+    y6 = _mm512_clmulepi64_epi128(x3, x0, 0x11);
+    x1 = _mm512_ternarylogic_epi64(x4, y5, y6, 0x96);
+
+    /*
+     * Single fold blocks of 64, if any.
+     */
+    while (length >= 64) {
+        x2 = load_zmm(input);
+
+        x5 = _mm512_clmulepi64_epi128(x1, x0, 0x00);
+        x1 = _mm512_clmulepi64_epi128(x1, x0, 0x11);
+        x1 = _mm512_ternarylogic_epi64(x1, x2, x5, 0x96);
+
+        input += 64;
+        length -= 64;
+    }
+
+    /*
+     * Fold 512-bits to 128-bits.
+     */
+    x0 = load_zmm(k1k4);
+    x4 = _mm512_clmulepi64_epi128(x1, x0, 0x00);
+    x3 = _mm512_clmulepi64_epi128(x1, x0, 0x11);
+    x2 = _mm512_xor_si512(x3, x4);
+    a1 = _mm_xor_si128(_mm512_extracti32x4_epi32(x1, 3), _mm512_extracti32x4_epi32(x2, 0));
+    a1 = _mm_ternarylogic_epi64(a1, _mm512_extracti32x4_epi32(x2, 1), _mm512_extracti32x4_epi32(x2, 2), 0x96);
+
+    /*
+     * Fold 128-bits to 32-bits.
+     */
+    uint64_t val;
+    val = _mm_crc32_u64(0, _mm_extract_epi64(a1, 0));
+    return (uint32_t)_mm_crc32_u64(val, _mm_extract_epi64(a1, 1));
 }
 
 
@@ -313,11 +433,11 @@ TEST(test_crc32c, avx512_scalar) {
         }
 
         /* Compute crc32c using simple scalar methods and SIMD method */
-        uint32_t avxcrc = crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
+        uint32_t avxcrc = aws_crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
         uint32_t scalar_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
 
         /* ASSERT values are the same */
-        ASSERT_EQ(scalar_crc, avxcrc) << "buffer size = " << arr.size();
+        ASSERT_EQ(scalar_crc, ~avxcrc) << "buffer size = " << arr.size();
         arr.clear();
     }
 }
