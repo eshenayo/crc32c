@@ -322,7 +322,7 @@ crc32c_avx512(const unsigned char* data, ssize_t length, uint32_t crc)
 
 			input += 256;
 			length -= 256;
-				}
+		}
 
 		/*
 		 * Fold 256 bytes into 64 bytes.
@@ -433,11 +433,13 @@ TEST(test_crc32c, avx512_scalar) {
         }
 
         /* Compute crc32c using simple scalar methods and SIMD method */
-        uint32_t avxcrc = aws_crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
+        uint32_t awscrc = aws_crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
+        uint32_t avxcrc = crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
         uint32_t scalar_crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
 
         /* ASSERT values are the same */
-        ASSERT_EQ(scalar_crc, ~avxcrc) << "buffer size = " << arr.size();
+        ASSERT_EQ(scalar_crc, avxcrc) << "buffer size = " << arr.size();
+        ASSERT_EQ(scalar_crc, awscrc) << "buffer size = " << arr.size();
         arr.clear();
     }
 }
