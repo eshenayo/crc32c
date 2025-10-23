@@ -1,12 +1,32 @@
 #include <immintrin.h>
-#include <gtest/gtest.h>
+#include <cstdint>
+#include <cstddef>
+#include <cstring>
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <functional>
+#include <iostream>
+#include <sstream>
+#include <algorithm>
 #include <numeric>
+#include <stdexcept>
+
+#if defined(__GTEST__)
+  #include <gtest/gtest.h>
+#endif
+
+#if defined(__GBENCH__)
+  #include <benchmark/benchmark.h>
+#endif
 
 #define zalign(x) __attribute__((aligned(x)))
 #define aligned_512_u64 __attribute__((aligned64)) uint64_t
 #define load_zmm _mm512_loadu_si512
 #define clmul_lo(a, b) (_mm_clmulepi64_si128((a), (b), 0))
 #define clmul_hi(a, b) (_mm_clmulepi64_si128((a), (b), 17))
+
+/* -------------------- CRC Implementations -------------------- */
 
 __attribute__((target("sse4.2")))
 inline uint32_t
@@ -210,7 +230,6 @@ crc32c_sse42(const unsigned char *buf, ssize_t len, uint32_t crc)
     return crc32c_scalar(buf, len, crc);
 }
 
-
 __attribute__((target("avx512vl,vpclmulqdq")))
 inline uint32_t
 crc32c_avx512(const unsigned char* data, ssize_t length, uint32_t crc)
@@ -350,7 +369,190 @@ static uint8_t randomval()
     return (rand() % 255);
 }
 
-#ifdef __GTEST__
+/* -------------------- Benchmark wrappers (one per algorithm) -------------------- */
+#if defined(__GBENCH__)
+static std::vector<unsigned char> g_bench_buffer;
+static const size_t g_max_default_size = 2048; // largest of default Arg values
+
+// Each benchmark uses State.range(0) for size.
+static void scalar_crc32c(benchmark::State& state) {
+    size_t n = static_cast<size_t>(state.range(0));
+    for (auto _ : state) {
+        uint32_t crc = crc32c_scalar(g_bench_buffer.data(), n, 0xFFFFFFFF);
+        benchmark::DoNotOptimize(crc);
+    }
+    state.SetBytesProcessed(int64_t(state.iterations()) * int64_t(n));
+}
+
+static void corsix_crc32c(benchmark::State& state) {
+    size_t n = static_cast<size_t>(state.range(0));
+    for (auto _ : state) {
+        uint32_t crc = crc32c_sse42_corsix(g_bench_buffer.data(), n, 0xFFFFFFFF);
+        benchmark::DoNotOptimize(crc);
+    }
+    state.SetBytesProcessed(int64_t(state.iterations()) * int64_t(n));
+}
+
+static void sse42_crc32c(benchmark::State& state) {
+    size_t n = static_cast<size_t>(state.range(0));
+    for (auto _ : state) {
+        uint32_t crc = crc32c_sse42(g_bench_buffer.data(), n, 0xFFFFFFFF);
+        benchmark::DoNotOptimize(crc);
+    }
+    state.SetBytesProcessed(int64_t(state.iterations()) * int64_t(n));
+}
+
+static void avx512_crc32c(benchmark::State& state) {
+    size_t n = static_cast<size_t>(state.range(0));
+    for (auto _ : state) {
+        uint32_t crc = crc32c_avx512(g_bench_buffer.data(), n, 0xFFFFFFFF);
+        benchmark::DoNotOptimize(crc);
+    }
+    state.SetBytesProcessed(int64_t(state.iterations()) * int64_t(n));
+}
+#endif
+
+/* -------------------- CLI Parsing -------------------- */
+struct BenchConfig {
+    std::vector<std::string> algorithms;
+    std::vector<size_t> sizes;
+    bool run_all = false;
+};
+
+static void split_csv(const std::string &s, std::vector<std::string>& out) {
+    std::stringstream ss(s);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        if (!item.empty()) out.push_back(item);
+    }
+}
+
+static std::vector<size_t> parse_sizes_csv(const std::string& s) {
+    std::vector<std::string> parts;
+    split_csv(s, parts);
+    std::vector<size_t> sizes;
+    sizes.reserve(parts.size());
+    for (auto &p : parts)
+        sizes.push_back(static_cast<size_t>(std::stoull(p)));
+    return sizes;
+}
+
+static std::vector<std::string> default_algorithms() {
+    return { "scalar", "corsix", "sse42", "avx512" };
+}
+
+static std::vector<size_t> default_sizes() {
+    // Original BENCH macro sizes
+    return { 64, 128, 256, 512, 1024, 2048 };
+}
+
+static void print_usage(const char* prog) {
+    std::cout <<
+        "Usage: " << prog << " [options]\n"
+        "  --algorithm <name>          Run a single algorithm\n"
+        "  --algorithms a,b,c          Run a comma-separated list of algorithms\n"
+        "  --sizes n1,n2,n3            Buffer sizes (override defaults: 64,128,256,512,1024,2048)\n"
+        "  --all                       Run all algorithms (default if none specified)\n"
+        "  --list                      List supported algorithms\n"
+        "  --help                      Show this help\n"
+        "Algorithms: scalar, corsix, sse42, avx512\n";
+}
+
+static BenchConfig parse_args(int& argc, char** argv) {
+    BenchConfig cfg;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--help" || arg == "-h") {
+            print_usage(argv[0]);
+            std::exit(0);
+        } else if (arg == "--list") {
+            std::cout << "Algorithms:\n";
+            for (auto& a : default_algorithms())
+                std::cout << "  " << a << "\n";
+            std::exit(0);
+        } else if (arg == "--all") {
+            cfg.run_all = true;
+        } else if (arg == "--algorithm") {
+            if (i + 1 >= argc) throw std::runtime_error("--algorithm requires a value");
+            cfg.algorithms.push_back(argv[++i]);
+        } else if (arg == "--algorithms") {
+            if (i + 1 >= argc) throw std::runtime_error("--algorithms requires a value");
+            std::vector<std::string> list;
+            split_csv(argv[++i], list);
+            cfg.algorithms.insert(cfg.algorithms.end(), list.begin(), list.end());
+        } else if (arg == "--sizes") {
+            if (i + 1 >= argc) throw std::runtime_error("--sizes requires a value");
+            cfg.sizes = parse_sizes_csv(argv[++i]);
+        } else {
+            // Allow other args to pass to benchmark / gtest
+            continue;
+        }
+    }
+
+    if (cfg.run_all || cfg.algorithms.empty())
+        cfg.algorithms = default_algorithms();
+    if (cfg.sizes.empty())
+        cfg.sizes = default_sizes();
+
+    std::sort(cfg.algorithms.begin(), cfg.algorithms.end());
+    cfg.algorithms.erase(std::unique(cfg.algorithms.begin(), cfg.algorithms.end()), cfg.algorithms.end());
+    std::sort(cfg.sizes.begin(), cfg.sizes.end());
+    cfg.sizes.erase(std::unique(cfg.sizes.begin(), cfg.sizes.end()), cfg.sizes.end());
+    return cfg;
+}
+
+/* -------------------- Main Functions -------------------- */
+#if defined(__GBENCH__)
+int main(int argc, char** argv) {
+    BenchConfig cfg;
+    try {
+        cfg = parse_args(argc, argv);
+    } catch (const std::exception& ex) {
+        std::cerr << "Argument error: " << ex.what() << "\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    // Map algorithm name -> benchmark function pointer
+    std::unordered_map<std::string, void(*)(benchmark::State&)> bench_map {
+        { "scalar",  scalar_crc32c },
+        { "corsix",  corsix_crc32c },
+        { "sse42",   sse42_crc32c },
+        { "avx512",  avx512_crc32c }
+    };
+
+    // Validate algorithms
+    for (auto& a : cfg.algorithms) {
+        if (bench_map.find(a) == bench_map.end()) {
+            std::cerr << "Unknown algorithm: " << a << "\n";
+            return 1;
+        }
+    }
+
+    // Prepare buffer (largest requested size)
+    size_t max_size = cfg.sizes.empty() ? 0 : *std::max_element(cfg.sizes.begin(), cfg.sizes.end());
+    if (max_size < g_max_default_size) max_size = g_max_default_size;
+    g_bench_buffer.resize(max_size);
+    srand(42);
+    for (size_t ii = 0; ii < max_size; ++ii) {
+        g_bench_buffer[ii] = randomval();
+    }
+
+    // Dynamically register benchmarks with requested sizes.
+    for (const auto& alg : cfg.algorithms) {
+        for (auto sz : cfg.sizes) {
+            std::string name = alg + "/size=" + std::to_string(sz);
+            benchmark::RegisterBenchmark(name.c_str(), bench_map[alg])->Arg(static_cast<int>(sz));
+        }
+    }
+
+    // Initialize / run
+    benchmark::Initialize(&argc, argv);
+    benchmark::RunSpecifiedBenchmarks();
+    benchmark::Shutdown();
+    return 0;
+}
+#elif defined(__GTEST__)
 #define MAX_BUF_SIZE 4*1024
 
 TEST(test_crc32c, sse_scalar) {
@@ -401,68 +603,27 @@ TEST(test_crc32c, avx512_scalar) {
         arr.clear();
     }
 }
+
+TEST(CRC32C, Agreement) {
+    const char* msg = "hello world";
+    auto* p = reinterpret_cast<const unsigned char*>(msg);
+    size_t n = std::strlen(msg);
+    uint32_t c_scalar = crc32c_scalar(p, n, 0);
+    uint32_t c_corsix = crc32c_sse42_corsix(p, n, 0);
+    uint32_t c_sse42  = crc32c_sse42(p, n, 0);
+    uint32_t c_avx512 = crc32c_avx512(p, n, 0);
+    ASSERT_EQ(c_scalar, c_corsix);
+    ASSERT_EQ(c_scalar, c_sse42);
+    ASSERT_EQ(c_scalar, c_avx512);
+}
+
+int main(int argc, char** argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
+}
+#else
+int main(int argc, char** argv) {
+    print_usage(argv[0]);
+    return 0;
+}
 #endif
-
-#ifdef __GBENCH__
-#include <benchmark/benchmark.h>
-
-static void scalar_crc32c(benchmark::State& state) {
-    size_t size = state.range(0);
-    std::vector<unsigned char> arr(size);
-    srand(42);
-    for (size_t ii = 0; ii < size; ++ii) {
-        arr[ii] = randomval();
-    }
-    for (auto _ : state) {
-        auto crc = crc32c_scalar(arr.data(), size, 0xFFFFFFFF);
-        benchmark::DoNotOptimize(crc);
-    }
-}
-
-static void sse42_crc32c(benchmark::State& state) {
-    size_t size = state.range(0);
-    std::vector<unsigned char> arr(size);
-    srand(42);
-    for (size_t ii = 0; ii < size; ++ii) {
-        arr[ii] = randomval();
-    }
-    for (auto _ : state) {
-        auto crc = crc32c_sse42(arr.data(), size, 0xFFFFFFFF);
-        benchmark::DoNotOptimize(crc);
-    }
-}
-
-static void avx512_crc32c(benchmark::State& state) {
-    size_t size = state.range(0);
-    std::vector<unsigned char> arr(size);
-    srand(42);
-    for (size_t ii = 0; ii < size; ++ii) {
-        arr[ii] = randomval();
-    }
-    for (auto _ : state) {
-        auto crc = crc32c_avx512(arr.data(), size, 0xFFFFFFFF);
-        benchmark::DoNotOptimize(crc);
-    }
-}
-
-static void corsix_crc32c(benchmark::State& state) {
-    size_t size = state.range(0);
-    std::vector<unsigned char> arr(size);
-    srand(42);
-    for (size_t ii = 0; ii < size; ++ii) {
-        arr[ii] = randomval();
-    }
-    for (auto _ : state) {
-        auto crc = crc32c_sse42_corsix(arr.data(), size, 0xFFFFFFFF);
-        benchmark::DoNotOptimize(crc);
-    }
-}
-// Register the function as a benchmark
- #define BENCH(func) \
-     BENCHMARK(func)->Arg(64)->Arg(128)->Arg(256)->Arg(512)->Arg(1024)->Arg(2048);
-
-     BENCH(scalar_crc32c)
-     BENCH(sse42_crc32c)
-     BENCH(avx512_crc32c)
-     BENCH(corsix_crc32c)
-#endif // __BENCH__
